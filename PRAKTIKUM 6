@@ -1,0 +1,89 @@
+# Praktikum 6 - Fuzzy Rule dan Knowledge Base
+# Kasus: Sistem Kendali Kipas Pendingin Server Ruang Data
+
+# 1. MATRIKS BASIS ATURAN (Suhu Ruang x Beban CPU -> Kecepatan Kipas)
+#
+# | Suhu \ Beban CPU | Ringan     | Sedang     | Berat      |
+# |------------------|------------|------------|------------|
+# | Dingin           | R1: Lambat | R2: Lambat | R3: Sedang |
+# | Normal           | R4: Lambat | R5: Sedang | R6: Cepat  |
+# | Panas            | R7: Sedang | R8: Cepat  | R9: Cepat  |
+#
+# Logika pakar: makin panas ruangan dan makin berat beban CPU,
+# makin cepat kipas harus berputar. Ruangan dingin dengan beban
+# ringan cukup dengan kipas lambat (hemat energi).
+
+
+# 2. KELAS STRUKTUR ATURAN FUZZY
+class FuzzyRule:
+    def __init__(self, rule_id, antecedent, consequent, operator='AND'):
+        self.rule_id = rule_id
+        self.antecedent = antecedent
+        self.consequent = consequent
+        self.operator = operator.upper()
+
+    def hitung_firing_strength(self, derajat_fuzzifikasi):
+        nilai_derajat = []
+        for var_nama, label_nama in self.antecedent.items():
+            deg = derajat_fuzzifikasi[var_nama].get(label_nama, 0.0)
+            nilai_derajat.append(deg)
+
+        if not nilai_derajat:
+            return 0.0
+
+        if self.operator == 'AND':
+            return min(nilai_derajat)
+        elif self.operator == 'OR':
+            return max(nilai_derajat)
+        else:
+            raise ValueError(f"Operator {self.operator} tidak dikenali.")
+
+    def __str__(self):
+        syarat = f" {self.operator} ".join(
+            [f"{var} is {lbl}" for var, lbl in self.antecedent.items()])
+        hasil = ", ".join(
+            [f"{var} is {lbl}" for var, lbl in self.consequent.items()])
+        return f"[{self.rule_id}] IF {syarat} THEN {hasil}"
+
+# 3. BASIS ATURAN (9 ATURAN)
+
+rule_base = [
+    FuzzyRule("R1", {"suhu": "Dingin", "cpu": "Ringan"}, {"kipas": "Lambat"}),
+    FuzzyRule("R2", {"suhu": "Dingin", "cpu": "Sedang"}, {"kipas": "Lambat"}),
+    FuzzyRule("R3", {"suhu": "Dingin", "cpu": "Berat"},  {"kipas": "Sedang"}),
+    FuzzyRule("R4", {"suhu": "Normal", "cpu": "Ringan"}, {"kipas": "Lambat"}),
+    FuzzyRule("R5", {"suhu": "Normal", "cpu": "Sedang"}, {"kipas": "Sedang"}),
+    FuzzyRule("R6", {"suhu": "Normal", "cpu": "Berat"},  {"kipas": "Cepat"}),
+    FuzzyRule("R7", {"suhu": "Panas",  "cpu": "Ringan"}, {"kipas": "Sedang"}),
+    FuzzyRule("R8", {"suhu": "Panas",  "cpu": "Sedang"}, {"kipas": "Cepat"}),
+    FuzzyRule("R9", {"suhu": "Panas",  "cpu": "Berat"},  {"kipas": "Cepat"}),
+]
+
+# 4. PENGUJIAN EVALUASI ATURAN
+
+derajat_input = {
+    "suhu": {"Dingin": 0.2, "Normal": 0.8, "Panas": 0.0},
+    "cpu":  {"Ringan": 0.0, "Sedang": 0.5, "Berat": 0.5},
+}
+
+print("=" * 80)
+print("HASIL EVALUASI BASIS ATURAN FUZZY - KIPAS PENDINGIN SERVER")
+print("=" * 80)
+print(f"Input Suhu    : {derajat_input['suhu']}")
+print(f"Input Beban CPU: {derajat_input['cpu']}")
+print("-" * 80)
+
+aturan_aktif = []
+for rule in rule_base:
+    alpha = rule.hitung_firing_strength(derajat_input)
+    output_lbl = list(rule.consequent.values())[0]
+    status = f"AKTIF (alpha = {alpha:.2f})" if alpha > 0 else "NONAKTIF"
+    print(f"{rule} --> {status}")
+    if alpha > 0:
+        aturan_aktif.append((rule.rule_id, output_lbl, alpha))
+
+print("\n" + "=" * 80)
+print("RINGKASAN ATURAN YANG TERPICU (FIRING RULES):")
+print("=" * 80)
+for r_id, konklusi, alpha in aturan_aktif:
+    print(f" - {r_id:<4} : Kecepatan Kipas = {konklusi:<7} dengan alpha = {alpha:.2f}")
