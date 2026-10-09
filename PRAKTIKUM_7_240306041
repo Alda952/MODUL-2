@@ -1,0 +1,235 @@
+# ==========================================================
+# Praktikum 7 - Arsitektur Fuzzy Inference System (FIS)
+# Kasus: Rekomendasi Diskon Layanan TI
+# ==========================================================
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+# ==========================================================
+# 1. FUNGSI KEANGGOTAAN
+# ==========================================================
+def trimf(x, params):
+    """Segitiga [a, b, c]"""
+    a, b, c = params
+    x = np.asarray(x, dtype=float)
+    y = np.zeros_like(x)
+    if b != a:
+        idx = (x > a) & (x <= b)
+        y[idx] = (x[idx] - a) / (b - a)
+    if c != b:
+        idx = (x > b) & (x < c)
+        y[idx] = (c - x[idx]) / (c - b)
+    y[x == b] = 1.0
+    return np.clip(y, 0.0, 1.0)
+
+
+def trapmf(x, params):
+    """Trapesium [a, b, c, d]"""
+    a, b, c, d = params
+    x = np.asarray(x, dtype=float)
+    y = np.zeros_like(x)
+    y[(x >= b) & (x <= c)] = 1.0
+    if b != a:
+        idx = (x > a) & (x < b)
+        y[idx] = (x[idx] - a) / (b - a)
+    if d != c:
+        idx = (x > c) & (x < d)
+        y[idx] = (d - x[idx]) / (d - c)
+    return np.clip(y, 0.0, 1.0)
+
+
+MF_TYPES = {"trimf": trimf, "trapmf": trapmf}
+
+
+def eval_mf(mf_def, x):
+    """mf_def = ('trimf', [a, b, c]) atau ('trapmf', [a, b, c, d])"""
+    tipe, params = mf_def
+    return MF_TYPES[tipe](x, params)
+
+
+# ==========================================================
+# 2. KELAS FUZZY INFERENCE SYSTEM (MAMDANI)
+# ==========================================================
+class FuzzyInferenceSystem:
+    def __init__(self, implication="min", defuzz_fallback=None):
+        self.inputs = {}      # nama -> (universe, mf_dict)
+        self.output = None    # (nama, universe, mf_dict)
+        self.rules = []       # list of (antecedent, consequent_label, operator)
+        self.implication = implication  # 'min' (clipping) / 'prod' (scaling)
+        self.defuzz_fallback = defuzz_fallback
+        self.last = {}        # menyimpan hasil tiap tahap (untuk visualisasi)
+
+    # ---------- Knowledge Base ----------
+    def add_input_variable(self, name, universe, mf_dict):
+        self.inputs[name] = (np.asarray(universe, dtype=float), mf_dict)
+
+    def set_output_variable(self, name, universe, mf_dict):
+        self.output = (name, np.asarray(universe, dtype=float), mf_dict)
+
+    def add_rule(self, rule_tuple):
+        """rule_tuple = (antecedent_dict, label_output[, operator])"""
+        antecedent, consequent = rule_tuple[0], rule_tuple[1]
+        operator = rule_tuple[2].upper() if len(rule_tuple) > 2 else "AND"
+        self.rules.append((antecedent, consequent, operator))
+
+    # ---------- Tahap 1: Fuzzifikasi ----------
+    def _fuzzify(self, input_values):
+        derajat = {}
+        for nama, (_, mf_dict) in self.inputs.items():
+            x = float(input_values[nama])
+            derajat[nama] = {lbl: float(eval_mf(mf, np.array([x]))[0])
+                             for lbl, mf in mf_dict.items()}
+        return derajat
+
+    # ---------- Tahap 2: Evaluasi aturan + implikasi ----------
+    def _evaluate_rules(self, derajat):
+        _, z, mf_out = self.output
+        hasil = []
+        for antecedent, konsekuen, op in self.rules:
+            nilai = [derajat[var][lbl] for var, lbl in antecedent.items()]
+            alpha = min(nilai) if op == "AND" else max(nilai)
+            mu_out = eval_mf(mf_out[konsekuen], z)
+            if self.implication == "min":
+                terpotong = np.minimum(alpha, mu_out)     # clipping
+            else:
+                terpotong = alpha * mu_out                # scaling
+            hasil.append((antecedent, konsekuen, alpha, terpotong))
+        return hasil
+
+    # ---------- Tahap 3: Agregasi (MAX) ----------
+    def _aggregate(self, hasil_rules):
+        _, z, _ = self.output
+        agg = np.zeros_like(z)
+        for _, _, _, terpotong in hasil_rules:
+            agg = np.maximum(agg, terpotong)
+        return agg
+
+    # ---------- Tahap 4: Defuzzifikasi (Centroid) ----------
+    def _defuzzify(self, agg):
+        _, z, _ = self.output
+        total = np.sum(agg)
+        if total == 0:
+            # fallback: tidak ada aturan terpicu
+            if self.defuzz_fallback is not None:
+                return float(self.defuzz_fallback)
+            return float(np.mean(z))   # titik tengah semesta output
+        return float(np.sum(z * agg) / total)
+
+    # ---------- Pipeline utama ----------
+    def compute(self, input_values):
+        derajat = self._fuzzify(input_values)
+        hasil_rules = self._evaluate_rules(derajat)
+        agg = self._aggregate(hasil_rules)
+        crisp = self._defuzzify(agg)
+        self.last = {"input": dict(input_values), "derajat": derajat,
+                     "rules": hasil_rules, "agg": agg, "crisp": crisp}
+        return crisp
+
+
+# ==========================================================
+# 3. KONFIGURASI SISTEM DISKON LAYANAN TI
+# ==========================================================
+fis = FuzzyInferenceSystem(implication="min")
+
+# Input 1: Lama Langganan (bulan), 0 - 36
+u_lama = np.linspace(0, 36, 361)
+fis.add_input_variable("lama", u_lama, {
+    "Baru": ("trapmf", [0, 0, 3, 12]),
+    "Lama": ("trapmf", [6, 18, 36, 36]),
+})
+
+# Input 2: Frekuensi Transaksi (kali/bulan), 0 - 20
+u_frek = np.linspace(0, 20, 201)
+fis.add_input_variable("frekuensi", u_frek, {
+    "Jarang": ("trapmf", [0, 0, 4, 9]),
+    "Sering": ("trapmf", [4, 9, 20, 20]),
+})
+
+# Output: Besaran Diskon (%), 0 - 30
+u_diskon = np.linspace(0, 30, 300)
+fis.set_output_variable("diskon", u_diskon, {
+    "Kecil":  ("trimf", [0, 5, 12]),
+    "Sedang": ("trimf", [8, 15, 22]),
+    "Besar":  ("trimf", [18, 25, 30]),
+})
+
+# Basis aturan
+fis.add_rule(({"lama": "Baru", "frekuensi": "Jarang"}, "Kecil"))
+fis.add_rule(({"lama": "Baru", "frekuensi": "Sering"}, "Sedang"))
+fis.add_rule(({"lama": "Lama", "frekuensi": "Jarang"}, "Sedang"))
+fis.add_rule(({"lama": "Lama", "frekuensi": "Sering"}, "Besar"))
+
+
+# ==========================================================
+# 4. VERIFIKASI DENGAN CONTOH MODUL (15 bulan, 8 kali)
+# ==========================================================
+fis.compute({"lama": 15, "frekuensi": 8})
+d = fis.last["derajat"]
+print("VERIFIKASI CONTOH MODUL (Lama=15, Frekuensi=8)")
+print(f"  Lama     : {d['lama']}")
+print(f"  Frekuensi: {d['frekuensi']}")
+print(f"  Diskon   : {fis.last['crisp']:.2f}%\n")
+
+
+# ==========================================================
+# 5. PENGUJIAN 3 KASUS
+# ==========================================================
+kasus = [
+    ("Kasus 1", {"lama": 3,  "frekuensi": 2}),
+    ("Kasus 2", {"lama": 12, "frekuensi": 6}),
+    ("Kasus 3", {"lama": 24, "frekuensi": 15}),
+]
+
+print("=" * 78)
+print("HASIL PENGUJIAN FIS - REKOMENDASI DISKON")
+print("=" * 78)
+
+hasil_kasus = []
+for nama, inp in kasus:
+    crisp = fis.compute(inp)
+    snap = dict(fis.last)
+    hasil_kasus.append((nama, snap))
+    print(f"\n{nama}: Lama = {inp['lama']} bulan, Frekuensi = {inp['frekuensi']} kali")
+    print(f"  Fuzzifikasi Lama      : { {k: round(v, 2) for k, v in snap['derajat']['lama'].items()} }")
+    print(f"  Fuzzifikasi Frekuensi : { {k: round(v, 2) for k, v in snap['derajat']['frekuensi'].items()} }")
+    for ant, kons, alpha, _ in snap["rules"]:
+        if alpha > 0:
+            syarat = " AND ".join(f"{v} is {l}" for v, l in ant.items())
+            print(f"  Aturan aktif: IF {syarat} THEN diskon is {kons}  (alpha = {alpha:.2f})")
+    print(f"  >> Rekomendasi Diskon : {crisp:.2f}%")
+
+print("\n" + "=" * 78)
+print("RINGKASAN")
+print("=" * 78)
+print(f"{'Kasus':<10}{'Lama (bln)':<14}{'Frekuensi':<12}{'Diskon (%)':<10}")
+for (nama, snap) in hasil_kasus:
+    print(f"{nama:<10}{snap['input']['lama']:<14}{snap['input']['frekuensi']:<12}{snap['crisp']:<10.2f}")
+
+
+# ==========================================================
+# 6. VISUALISASI AGREGASI & DEFUZZIFIKASI
+# ==========================================================
+_, z, mf_out = fis.output
+warna = {"Kecil": "green", "Sedang": "blue", "Besar": "red"}
+
+fig, axes = plt.subplots(1, 3, figsize=(16, 5), sharey=True)
+for ax, (nama, snap) in zip(axes, hasil_kasus):
+    for lbl, mf in mf_out.items():
+        ax.plot(z, eval_mf(mf, z), "--", color=warna[lbl], alpha=0.5, label=f"MF {lbl}")
+    ax.fill_between(z, 0, snap["agg"], color="purple", alpha=0.35, label="Daerah Agregasi")
+    ax.plot(z, snap["agg"], color="purple", linewidth=2.5)
+    ax.axvline(snap["crisp"], color="black", linewidth=2.5,
+               label=f"Centroid = {snap['crisp']:.2f}%")
+    ax.set_title(f"{nama}: Lama={snap['input']['lama']}, Frek={snap['input']['frekuensi']}",
+                 fontweight="bold")
+    ax.set_xlabel("Besaran Diskon (%)")
+    ax.set_ylim(-0.05, 1.05)
+    ax.grid(True, linestyle=":", alpha=0.6)
+    ax.legend(loc="upper left", fontsize=8)
+axes[0].set_ylabel("Derajat Keanggotaan μ(z)")
+fig.suptitle("Pipeline FIS: Implikasi, Agregasi, dan Defuzzifikasi Centroid",
+             fontsize=14, fontweight="bold")
+plt.tight_layout()
+plt.savefig("pipeline_fis_agregasi_defuzzifikasi.png", dpi=300)
+plt.show()
